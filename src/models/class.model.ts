@@ -2,56 +2,55 @@ import { Schema, model, Document, Types } from "mongoose"
 
 /**
  * RECURRENCE PATTERN ENUM
- * Explains how a class repeats over time.
+ * Why: To strictly define how the schedule generator should loop through dates.
  */
 export enum RecurrenceStrategy {
-  SINGLE_INSTANCE = "none", // A one-time event
-  EVERY_DAY = "daily", // Repeats daily based on interval
-  SPECIFIC_WEEKDAYS = "weekly", // Repeats on selected days (Mon, Wed, etc.)
-  SPECIFIC_MONTH_DAYS = "monthly", // Repeats on specific dates (1st, 15th, etc.)
-  CUSTOM_LOGIC = "custom", // Advanced looping or manual date selection
+  SINGLE_INSTANCE = "none", // Occurs once
+  EVERY_DAY = "daily", // repeats every X days
+  SPECIFIC_WEEKDAYS = "weekly", // repeats on Mon, Wed, etc.
+  SPECIFIC_MONTH_DAYS = "monthly", // repeats on 1st, 15th, etc.
+  CUSTOM_LOGIC = "custom", // manual date selection or complex patterns
 }
 
 /**
- * PRE-GENERATED SESSION INTERFACE
- * This is the "Result" of our generator logic.
- * These are the actual items that show up on the Calendar UI.
+ * Single scheduled session instance
+ * Why: We pre-generate these so that the Calendar UI doesn't have to
+ * calculate dates on the fly. This makes the system extremely fast.
  */
 interface IIndividualClassSession {
-  sessionStartDateTime: Date // Full ISO Date and Time
-  sessionEndDateTime: Date // Full ISO Date and Time
+  _id: Types.ObjectId // Critical for "Edit Single Instance" lookup
+  sessionStartDateTime: Date
+  sessionEndDateTime: Date
 }
 
 /**
- * TIME WINDOW INTERFACE
- * Defines the clock-time of the class (24h format).
+ * Exception entry
+ * Why: If a user moves a class from 9am to 11am, we store that here.
+ * If the user later changes the "Class Title" for the whole series,
+ * we use this array to make sure the 11am change isn't overwritten.
  */
-interface ITimeWindow {
-  startTime24h: string // e.g., "09:30"
-  endTime24h: string // e.g., "11:00"
+interface IInstanceException {
+  originalStart: Date // The "Anchor": Used to identify which session was changed
+  status: "cancelled" | "modified"
+  reason?: string
+  newStart?: Date // The manual override start time
+  newEnd?: Date // The manual override end time
 }
 
 export interface IClassSchedule extends Document {
   classTitle: string
   assignedInstructor: Types.ObjectId
   assignedRoom: Types.ObjectId
-
   recurrenceType: RecurrenceStrategy
-
-  // BOUNDARIES: These define the start and end of the repeating series
   seriesStartDate: Date
-  seriesEndDate?: Date // Mandatory for repeating classes to prevent infinite loops
-
-  // RULES: These define the "Logic" of the repetition
-  repeatEveryXWeeksOrDays: number // The interval (e.g., 2 = every 2nd week)
-  selectedWeekdays: number[] // 0 (Sun) to 6 (Sat)
-  selectedMonthDays: number[] // 1 to 31
-  manuallyChosenDates: Date[] // For random-pick mode in Custom
-
-  dailyTimeSlots: ITimeWindow[] // Multiple slots allowed per day (9AM, 2PM)
-
-  // THE GENERATED OUTPUT
-  preGeneratedClassSessions: IIndividualClassSession[]
+  seriesEndDate?: Date
+  repeatEveryXWeeksOrDays: number
+  selectedWeekdays: number[]
+  selectedMonthDays: number[]
+  manuallyChosenDates: Date[]
+  dailyTimeSlots: { startTime24h: string; endTime24h: string }[]
+  preGeneratedClassSessions: Types.DocumentArray<IIndividualClassSession>
+  exceptions: IInstanceException[]
 }
 
 const ClassScheduleSchema = new Schema<IClassSchedule>(
@@ -69,19 +68,18 @@ const ClassScheduleSchema = new Schema<IClassSchedule>(
       required: true,
       index: true,
     },
-
     recurrenceType: {
       type: String,
       enum: Object.values(RecurrenceStrategy),
-      default: RecurrenceStrategy.SINGLE_INSTANCE,
+      required: true,
     },
 
     seriesStartDate: { type: Date, required: true },
-    seriesEndDate: { type: Date }, // Boundary for the loops
+    seriesEndDate: { type: Date },
 
-    repeatEveryXWeeksOrDays: { type: Number, default: 1 }, // Used for Intervals
-    selectedWeekdays: [{ type: Number, min: 0, max: 6 }],
-    selectedMonthDays: [{ type: Number, min: 1, max: 31 }],
+    repeatEveryXWeeksOrDays: { type: Number, default: 1 },
+    selectedWeekdays: [{ type: Number }],
+    selectedMonthDays: [{ type: Number }],
     manuallyChosenDates: [{ type: Date }],
 
     dailyTimeSlots: [
@@ -91,22 +89,33 @@ const ClassScheduleSchema = new Schema<IClassSchedule>(
       },
     ],
 
-    // This array is used by the Aggregation Pipeline for fast Calendar Rendering
+    // THE SOURCE OF TRUTH: All queries look at this array
     preGeneratedClassSessions: [
       {
         sessionStartDateTime: { type: Date, required: true },
         sessionEndDateTime: { type: Date, required: true },
       },
     ],
+
+    // THE MEMORY: Keeps track of manual overrides to allow re-editing
+    exceptions: [
+      {
+        originalStart: { type: Date, required: true },
+        status: {
+          type: String,
+          enum: ["cancelled", "modified"],
+          required: true,
+        },
+        reason: { type: String, default: "" },
+        newStart: { type: Date },
+        newEnd: { type: Date },
+      },
+    ],
   },
   { timestamps: true },
 )
 
-/**
- * COMPOUND INDEXES for Conflict Prevention
- * Why: Allows MongoDB to instantly check if a room or instructor is busy
- * at a specific date/time without reading every document in the database.
- */
+// Compound indexes for ultra-fast conflict detection queries
 ClassScheduleSchema.index({
   assignedRoom: 1,
   "preGeneratedClassSessions.sessionStartDateTime": 1,

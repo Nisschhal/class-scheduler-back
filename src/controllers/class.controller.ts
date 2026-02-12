@@ -6,235 +6,103 @@ import { invalidateResourceCache } from "../utils/cache-helper.js"
 import { generateAllClassSessions } from "../utils/schedule-generator.util.js"
 
 /**
- * ATOMIC CONFLICT FINDER
- * Why: We need to know exactly which person/room is busy and at what time.
- * Logic: Checks if any existing session's START is before our NEW END,
- * and existing session's END is after our NEW START.
- */
-/**
- * FUNCTION: findDetailedSchedulingConflict
- * Purpose: This identifies exactly which class, person, or room is causing a conflict.
- * Improvement: Now includes Year and a Time Range (Start to End) for better user clarity.
+ * HELPER: DETAILED CONFLICT CHECKER
+ * Why: Checks both Room and Instructor against ALL other pre-generated sessions.
  */
 const findDetailedSchedulingConflict = async (
-  requestedSessionsByUser: any[],
+  requestedSessions: { sessionStartDateTime: Date; sessionEndDateTime: Date }[],
   targetRoomId: string,
   targetInstructorId: string,
-  ignoreCurrentClassId?: string,
+  ignoreSeriesId?: string,
 ) => {
-  const conflictSearchQuery: any = {
-    // We look for any class already using the requested Room OR Instructor
+  const conflictQuery: any = {
     $or: [
       { assignedRoom: targetRoomId },
       { assignedInstructor: targetInstructorId },
     ],
-    // We look inside the individual sessions of those classes
     preGeneratedClassSessions: {
       $elemMatch: {
-        $or: requestedSessionsByUser.map((newSession) => ({
-          // OVERLAP LOGIC: Conflict exists if (NewStart < ExistingEnd) AND (NewEnd > ExistingStart)
-          sessionStartDateTime: { $lt: newSession.sessionEndDateTime },
-          sessionEndDateTime: { $gt: newSession.sessionStartDateTime },
+        $or: requestedSessions.map((newSess) => ({
+          sessionStartDateTime: { $lt: newSess.sessionEndDateTime },
+          sessionEndDateTime: { $gt: newSess.sessionStartDateTime },
         })),
       },
     },
   }
 
-  // If we are updating an existing class, we ignore its own ID so it doesn't conflict with itself
-  if (ignoreCurrentClassId) {
-    conflictSearchQuery._id = { $ne: ignoreCurrentClassId }
-  }
+  if (ignoreSeriesId) conflictQuery._id = { $ne: ignoreSeriesId }
 
-  const existingConflictingDocument = await ClassSchedule.findOne(
-    conflictSearchQuery,
-  ).populate("assignedRoom assignedInstructor")
-
-  if (!existingConflictingDocument) return null
-
-  // STEP: Identify the EXACT session that caused the overlap
-  const exactProblematicSession =
-    existingConflictingDocument.preGeneratedClassSessions.find(
-      (existingSession) =>
-        requestedSessionsByUser.some(
-          (newlyRequestedSession) =>
-            newlyRequestedSession.sessionStartDateTime <
-              existingSession.sessionEndDateTime &&
-            newlyRequestedSession.sessionEndDateTime >
-              existingSession.sessionStartDateTime,
-        ),
-    )
-
-  /**
-   * FORMATTING THE EXPLICIT MESSAGE:
-   * "EEEE, MMMM do, yyyy" -> Wednesday, February 18th, 2026
-   * "p" -> 2:00 PM
-   * Result: "Wednesday, February 18th, 2026 from 2:00 PM to 4:00 PM"
-   */
-  const formattedStartTime = format(
-    exactProblematicSession!.sessionStartDateTime,
-    "EEEE, MMMM do, yyyy 'at' p",
+  const conflictingSeries = await ClassSchedule.findOne(conflictQuery).populate(
+    "assignedRoom assignedInstructor",
   )
-  const formattedEndTime = format(
-    exactProblematicSession!.sessionEndDateTime,
-    "p",
+  if (!conflictingSeries) return null
+
+  const exactSession = conflictingSeries.preGeneratedClassSessions.find(
+    (existing) =>
+      requestedSessions.some(
+        (proposed) =>
+          proposed.sessionStartDateTime < existing.sessionEndDateTime &&
+          proposed.sessionEndDateTime > existing.sessionStartDateTime,
+      ),
   )
 
-  const fullHumanReadableTimeRange = `${formattedStartTime} to ${formattedEndTime}`
-
-  const conflictingInstructorName = (
-    existingConflictingDocument.assignedInstructor as any
-  ).name
-  const conflictingRoomName = (existingConflictingDocument.assignedRoom as any)
-    .roomName
-
-  // Determine if the logic hit a Teacher conflict or a Room conflict
-  const isInstructorTheProblem =
-    existingConflictingDocument.assignedInstructor._id.toString() ===
-    targetInstructorId
-
-  const finalDetailField = isInstructorTheProblem
-    ? "assignedInstructor"
-    : "assignedRoom"
-
-  /**
-   * EXPLICIT MESSAGE EXAMPLE:
-   * "Instructor Dr. Sarah Connor-Sky is already teaching "Physics 101 Lab" on Wednesday, February 18th, 2026 from 2:00 PM to 4:00 PM."
-   */
-  const finalErrorMessage = isInstructorTheProblem
-    ? `Instructor ${conflictingInstructorName} is already teaching "${existingConflictingDocument.classTitle}" on ${fullHumanReadableTimeRange}.`
-    : `Room ${conflictingRoomName} is already reserved for "${existingConflictingDocument.classTitle}" on ${fullHumanReadableTimeRange}.`
-
+  const isInstructor =
+    conflictingSeries.assignedInstructor._id.toString() === targetInstructorId
   return {
-    field: finalDetailField,
-    message: finalErrorMessage,
+    field: isInstructor ? "assignedInstructor" : "assignedRoom",
+    message: `${isInstructor ? "Instructor" : "Room"} is busy on ${format(exactSession!.sessionStartDateTime, "PPpp")}`,
   }
 }
 
 /**
  * CREATE CLASS SERIES
- * Logic Update: Now automatically calculates 'seriesEndDate' if the user provides manual dates.
  */
 export const createClassSeries = async (req: Request, res: Response) => {
   try {
-    const {
-      assignedRoom,
-      assignedInstructor,
-      recurrenceType,
-      seriesEndDate,
-      manuallyChosenDates,
-    } = req.body
-
-    /**
-     * LOGIC FOR MANUAL MODE:
-     * If the user picks specific dates but forgets to provide a "seriesEndDate",
-     * we find the latest date in their list and use that as the boundary.
-     * This satisfies the requirement that all recurring classes must have a boundary.
-     */
-    if (
-      recurrenceType === "custom" &&
-      manuallyChosenDates &&
-      manuallyChosenDates.length > 0
-    ) {
-      if (!seriesEndDate) {
-        // We sort the dates to find the one furthest in the future
-        const sortedDates = [...manuallyChosenDates].sort(
-          (firstDate, secondDate) =>
-            new Date(firstDate).getTime() - new Date(secondDate).getTime(),
-        )
-        // We assign the last date in the sorted list to the request body
-        req.body.seriesEndDate = sortedDates[sortedDates.length - 1]
-        console.log(`Auto-assigned seriesEndDate: ${req.body.seriesEndDate}`)
-      }
-    }
-
-    /**
-     * 1. RECURRENCE BOUNDARY VALIDATION
-     * Why: Now that we auto-calculate for manual mode, this will only
-     * trigger if the user picks 'Daily/Weekly/Monthly' but forgets the end date.
-     */
-    if (recurrenceType !== "none" && !req.body.seriesEndDate) {
-      return sendError(
-        res,
-        "Validation Error",
-        "Repeating schedules require an End Date.",
-        [
-          {
-            field: "seriesEndDate",
-            message:
-              "Please specify when this series stops or pick specific dates.",
-          },
-        ],
-      )
-    }
-
-    // 2. GENERATE ALL SESSIONS
-    // This calls your utility which handles the manual dates or pattern loops
-    const allCalculatedSessions = generateAllClassSessions(req.body)
-
-    if (allCalculatedSessions.length === 0) {
-      return sendError(
-        res,
-        "Scheduling Error",
-        "No future sessions were created. Ensure your selected dates and time are at least 30 minutes in the future.",
-      )
-    }
-
-    // 3. ATOMIC CONFLICT CHECK (All or Nothing)
-    const conflictResult = await findDetailedSchedulingConflict(
-      allCalculatedSessions,
-      assignedRoom,
-      assignedInstructor,
+    const generatedSessions = generateAllClassSessions(req.body)
+    const conflict = await findDetailedSchedulingConflict(
+      generatedSessions,
+      req.body.assignedRoom,
+      req.body.assignedInstructor,
     )
 
-    if (conflictResult) {
-      return sendError(res, "Scheduling Conflict", conflictResult.message, [
-        conflictResult,
-      ])
-    }
+    if (conflict)
+      return sendError(res, "Conflict", conflict.message, [conflict])
 
-    // 4. PERSIST TO DATABASE
-    const newlyCreatedClass = await ClassSchedule.create({
+    const newClass = await ClassSchedule.create({
       ...req.body,
-      preGeneratedClassSessions: allCalculatedSessions,
+      preGeneratedClassSessions: generatedSessions,
     })
-
-    // IMPORTANT: Clear/invalidate cache so GET /api/classes returns the new data
     await invalidateResourceCache("CLASSES")
-
-    return sendSuccess(
-      res,
-      "Success",
-      "Class series scheduled successfully.",
-      newlyCreatedClass,
-    )
+    return sendSuccess(res, "Success", "Series created", newClass)
   } catch (error: any) {
-    return sendError(res, "Server Error", error.message)
+    return sendError(res, "Error", error.message)
   }
 }
 
 /**
- * GET CLASSES (With Aggregation and Pagination)
+ * GET PAGINATED CLASSES
+ * Why: Uses aggregation $facet to return total count and joined data in one request.
  */
 export const getPaginatedClasses = async (req: Request, res: Response) => {
   try {
-    const pageNumber = parseInt(req.query.page as string) || 1
-    const itemsPerPage = parseInt(req.query.limit as string) || 10
-    const skipCount = (pageNumber - 1) * itemsPerPage
+    const page = parseInt(req.query.page as string) || 1
+    const limit = parseInt(req.query.limit as string) || 10
 
-    const aggregationResult = await ClassSchedule.aggregate([
+    const results = await ClassSchedule.aggregate([
       {
         $facet: {
-          totalCountMetadata: [{ $count: "totalDocuments" }],
-          paginatedData: [
+          metadata: [{ $count: "total" }],
+          data: [
             { $sort: { createdAt: -1 } },
-            { $skip: skipCount },
-            { $limit: itemsPerPage },
+            { $skip: (page - 1) * limit },
+            { $limit: limit },
             {
               $lookup: {
                 from: "instructors",
                 localField: "assignedInstructor",
                 foreignField: "_id",
-                as: "instructorDetails",
+                as: "instructor",
               },
             },
             {
@@ -242,96 +110,195 @@ export const getPaginatedClasses = async (req: Request, res: Response) => {
                 from: "physicalrooms",
                 localField: "assignedRoom",
                 foreignField: "_id",
-                as: "roomDetails",
+                as: "room",
               },
             },
-            { $unwind: "$instructorDetails" },
-            { $unwind: "$roomDetails" },
+            { $unwind: "$instructor" },
+            { $unwind: "$room" },
           ],
         },
       },
     ])
 
-    console.log(
-      "Aggregation Result:",
-      JSON.stringify(aggregationResult, null, 2),
-    )
-
-    const finalDataList = aggregationResult[0].paginatedData
-    const totalRecords =
-      aggregationResult[0].totalCountMetadata[0]?.totalDocuments || 0
-
-    const paginationResponse = {
-      total: totalRecords,
-      page: pageNumber,
-      limit: itemsPerPage,
-      totalPages: Math.ceil(totalRecords / itemsPerPage),
-    }
-
-    return sendSuccess(
-      res,
-      "Fetched",
-      "Class list loaded.",
-      finalDataList,
-      paginationResponse,
-    )
+    const total = results[0].metadata[0]?.total || 0
+    return sendSuccess(res, "Fetched", "Success", results[0].data, {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    })
   } catch (error: any) {
-    return sendError(res, "Server Error", error.message)
+    return sendError(res, "Error", error.message)
   }
 }
 
 /**
- * UPDATE CLASS SERIES
+ * UPDATE ENTIRE SERIES (Bulk Update)
+ * Why: Merges existing exceptions into new rules to protect manual changes.
  */
-export const updateClassSeries = async (req: Request, res: Response) => {
+export const updateEntireClassSeries = async (req: Request, res: Response) => {
   try {
-    /**
-     * FIX: Use type casting to ensure TypeScript knows 'id' is a string.
-     * req.params.id is standard, but some TS configs see it as string | string[].
-     */
-    const classIdToUpdate = req.params.id as string
+    let { id } = req.params
+    if (Array.isArray(id)) id = id[0]
+    const series = await ClassSchedule.findById(id)
+    if (!series) return sendError(res, "Not Found", "Series not found")
 
-    const newRequestedSessionsList = generateAllClassSessions(req.body)
+    // 1. Generate "Fresh" sessions from new rules
+    let newSessions = generateAllClassSessions(req.body)
 
-    // 1. Conflict Check (Ignoring the current class ID)
-    const conflictDetail = await findDetailedSchedulingConflict(
-      newRequestedSessionsList,
+    // 2. THE PROTECTION LOGIC: Apply old exceptions to new sessions
+    newSessions = newSessions
+      .map((sess) => {
+        const manualEdit = series.exceptions.find(
+          (ex) =>
+            ex.originalStart.getTime() ===
+              sess.sessionStartDateTime.getTime() && ex.status === "modified",
+        )
+        if (manualEdit) {
+          return {
+            ...sess,
+            sessionStartDateTime: manualEdit.newStart!,
+            sessionEndDateTime: manualEdit.newEnd!,
+          }
+        }
+        return sess
+      })
+      .filter((sess) => {
+        // Remove sessions that were previously cancelled
+        return !series.exceptions.some(
+          (ex) =>
+            ex.originalStart.getTime() ===
+              sess.sessionStartDateTime.getTime() && ex.status === "cancelled",
+        )
+      })
+
+    // 3. Conflict check the merged schedule
+    const conflict = await findDetailedSchedulingConflict(
+      newSessions,
       req.body.assignedRoom,
       req.body.assignedInstructor,
-      classIdToUpdate, // We pass the ID here to IGNORE it in the search
+      id,
     )
+    if (conflict) return sendError(res, "Conflict", conflict.message)
 
-    if (conflictDetail) {
-      return sendError(res, "Update Conflict", conflictDetail.message, [
-        conflictDetail,
-      ])
-    }
-
-    // 2. Perform Update
-    const successfullyUpdatedDocument = await ClassSchedule.findByIdAndUpdate(
-      classIdToUpdate,
-      { ...req.body, preGeneratedClassSessions: newRequestedSessionsList },
+    const updated = await ClassSchedule.findByIdAndUpdate(
+      id,
+      { ...req.body, preGeneratedClassSessions: newSessions },
       { new: true },
     )
+    await invalidateResourceCache("CLASSES")
+    return sendSuccess(res, "Success", "Entire series updated", updated)
+  } catch (error: any) {
+    return sendError(res, "Error", error.message)
+  }
+}
 
-    if (!successfullyUpdatedDocument) {
-      return sendError(
-        res,
-        "Not Found",
-        "The class you want to update does not exist.",
-      )
+/**
+ * UPDATE SINGLE INSTANCE (Re-editable Upsert Logic)
+ * Why: Allows moving one session. If moved again, it updates the same exception.
+ */
+export const updateSingleInstance = async (req: Request, res: Response) => {
+  try {
+    const { seriesId, sessionId } = req.params
+    const { newStart, newEnd, reason } = req.body
+
+    const series = await ClassSchedule.findById(seriesId)
+    if (!series) return sendError(res, "Not Found", "Series not found")
+
+    const sessionIdStr = Array.isArray(sessionId) ? sessionId[0] : sessionId
+    const session = series.preGeneratedClassSessions.id(sessionIdStr)
+    if (!session)
+      return sendError(res, "Not Found", "Session instance not found")
+
+    // Conflict Check
+    const seriesIdStr = Array.isArray(seriesId) ? seriesId[0] : seriesId
+    const conflict = await findDetailedSchedulingConflict(
+      [
+        {
+          sessionStartDateTime: new Date(newStart),
+          sessionEndDateTime: new Date(newEnd),
+        },
+      ],
+      series.assignedRoom.toString(),
+      series.assignedInstructor.toString(),
+      seriesIdStr,
+    )
+    if (conflict) return sendError(res, "Conflict", conflict.message)
+
+    // UPSERT EXCEPTION: Find if this session was already modified before
+    const exIdx = series.exceptions.findIndex(
+      (ex) =>
+        ex.originalStart.getTime() === session.sessionStartDateTime.getTime(),
+    )
+
+    if (exIdx !== -1) {
+      // Update existing exception
+      series.exceptions[exIdx].newStart = new Date(newStart)
+      series.exceptions[exIdx].newEnd = new Date(newEnd)
+      series.exceptions[exIdx].reason = reason || "Updated again"
+    } else {
+      // Create new exception record
+      series.exceptions.push({
+        originalStart: session.sessionStartDateTime,
+        status: "modified",
+        newStart: new Date(newStart),
+        newEnd: new Date(newEnd),
+        reason: reason || "Manual override",
+      })
     }
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/classes returns the new data
-    await invalidateResourceCache("CLASSES")
+    // Apply to Source of Truth
+    session.sessionStartDateTime = new Date(newStart)
+    session.sessionEndDateTime = new Date(newEnd)
 
-    return sendSuccess(
-      res,
-      "Success",
-      "Class updated successfully",
-      successfullyUpdatedDocument,
-    )
+    await series.save()
+    await invalidateResourceCache("CLASSES")
+    return sendSuccess(res, "Success", "Instance updated", series)
   } catch (error: any) {
-    return sendError(res, "Server Error", error.message)
+    return sendError(res, "Error", error.message)
+  }
+}
+
+/**
+ * CANCEL SINGLE INSTANCE
+ */
+export const cancelSingleInstance = async (req: Request, res: Response) => {
+  try {
+    const { seriesId, sessionId } = req.params
+    const series = await ClassSchedule.findById(seriesId)
+    if (!series) return sendError(res, "Not Found", "Series not found")
+
+    const sessionIdStr = Array.isArray(sessionId) ? sessionId[0] : sessionId
+    const session = series.preGeneratedClassSessions.id(sessionIdStr)
+    if (!session) return sendError(res, "Not Found", "Session not found")
+
+    // Add to exceptions so we don't regenerate it later
+    series.exceptions.push({
+      originalStart: session.sessionStartDateTime,
+      status: "cancelled",
+      reason: req.body?.reason ?? "Cancelled by user",
+    })
+
+    // Remove from the pre-generated array (Source of Truth)
+    series.preGeneratedClassSessions.pull(sessionId)
+
+    await series.save()
+    await invalidateResourceCache("CLASSES")
+    return sendSuccess(res, "Success", "Instance cancelled", { sessionId })
+  } catch (error: any) {
+    return sendError(res, "Error", error.message)
+  }
+}
+
+/**
+ * DELETE ENTIRE SERIES
+ */
+export const deleteEntireClassSeries = async (req: Request, res: Response) => {
+  try {
+    await ClassSchedule.findByIdAndDelete(req.params.id)
+    await invalidateResourceCache("CLASSES")
+    return sendSuccess(res, "Success", "Series deleted completely")
+  } catch (error: any) {
+    return sendError(res, "Error", error.message)
   }
 }
