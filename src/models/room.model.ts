@@ -1,39 +1,47 @@
 import { Schema, model, Document, Types } from "mongoose"
 
 /**
- * 1. ROOM TYPE SCHEMA
+ * ROOM TYPE MODEL
+ * Why: This is the CATEGORY (e.g., "Science Lab", "Lecture Hall").
  * Requirement: "CRUD for room type"
- * Why: Separating Room Type allows for filtering rooms by their capabilities (e.g., "Lab" vs "Lecture Hall").
  */
 export interface IRoomType extends Document {
-  name: string // e.g., "Laboratory", "Conference Room"
+  roomTypeName: string
 }
 
 const RoomTypeSchema = new Schema<IRoomType>(
   {
-    name: { type: String, required: true, unique: true, trim: true },
+    roomTypeName: { type: String, required: true, unique: true, trim: true },
   },
   { timestamps: true },
 )
 
 /**
- * 3. ROOM SCHEMA
- * Why: Includes a reference to RoomType for structured data.
+ * PHYSICAL ROOM MODEL
+ * Why: This is the ACTUAL LOCATION (e.g., "Room 101", "Building B - Hall 2").
+ * This is where we check for scheduling conflicts.
  */
-export interface IRoom extends Document {
+export interface IPhysicalRoom extends Document {
   roomName: string
-  roomType: Types.ObjectId // Reference to RoomType model
-  capacity: number
+  roomTypeReference: Types.ObjectId // Links to RoomType
+  seatingCapacity: number
 }
 
-const RoomSchema = new Schema<IRoom>(
+const PhysicalRoomSchema = new Schema<IPhysicalRoom>(
   {
-    roomName: { type: String, required: true },
-    roomType: { type: Schema.Types.ObjectId, ref: "RoomType", required: true },
-    capacity: { type: Number, required: true },
+    roomName: { type: String, required: true, unique: true, trim: true },
+    roomTypeReference: {
+      type: Schema.Types.ObjectId,
+      ref: "RoomType",
+      required: true,
+    },
+    seatingCapacity: { type: Number, required: true },
   },
   { timestamps: true },
 )
 
-export const Room = model<IRoom>("Room", RoomSchema)
 export const RoomType = model<IRoomType>("RoomType", RoomTypeSchema)
+export const PhysicalRoom = model<IPhysicalRoom>(
+  "PhysicalRoom",
+  PhysicalRoomSchema,
+)

@@ -1,150 +1,101 @@
 import { Schema, model, Document, Types } from "mongoose"
 
 /**
- * 4. CLASS SCHEDULE SCHEMA (THE CORE LOGIC)
+ * RECURRENCE PATTERN ENUM
+ * Explains how a class repeats over time.
  */
+export enum RecurrenceStrategy {
+  SINGLE_INSTANCE = "none", // A one-time event
+  EVERY_DAY = "daily", // Repeats daily based on interval
+  SPECIFIC_WEEKDAYS = "weekly", // Repeats on selected days (Mon, Wed, etc.)
+  SPECIFIC_MONTH_DAYS = "monthly", // Repeats on specific dates (1st, 15th, etc.)
+  CUSTOM_LOGIC = "custom", // Advanced looping or manual date selection
+}
 
 /**
- * ENUM: Recurrence Types
- * Why: Ensures type safety. 'NONE' handles the "Normal Class" requirement,
- * while the others handle the "Advanced Scheduling Mode".
+ * PRE-GENERATED SESSION INTERFACE
+ * This is the "Result" of our generator logic.
+ * These are the actual items that show up on the Calendar UI.
  */
-export enum RecurrenceType {
-  NONE = "none",
-  DAILY = "daily",
-  WEEKLY = "weekly",
-  MONTHLY = "monthly",
-  CUSTOM = "custom",
+interface IIndividualClassSession {
+  sessionStartDateTime: Date // Full ISO Date and Time
+  sessionEndDateTime: Date // Full ISO Date and Time
 }
 
-// Time Slot Interface
-// Why: We store strings (HH:mm) for easy UI manipulation, but
-// use them to generate real Date objects in 'scheduleInstances'.
-interface ITimeSlot {
-  startTime: string // e.g., "09:00"
-  endTime: string // e.g., "10:30"
-}
-
-// Actual instance of a class on the calendar
-// Why: Crucial for the Aggregation Pipeline. Instead of calculating dates
-// every time a user views the calendar, we query these pre-calculated dates.
-interface IScheduleInstance {
-  start: Date // Full Date object (e.g., 2023-10-25T09:00:00)
-  end: Date // Full Date object (e.g., 2023-10-25T10:30:00)
+/**
+ * TIME WINDOW INTERFACE
+ * Defines the clock-time of the class (24h format).
+ */
+interface ITimeWindow {
+  startTime24h: string // e.g., "09:30"
+  endTime24h: string // e.g., "11:00"
 }
 
 export interface IClassSchedule extends Document {
-  title: string
-  instructor: Types.ObjectId
-  room: Types.ObjectId
-  recurrenceType: RecurrenceType
+  classTitle: string
+  assignedInstructor: Types.ObjectId
+  assignedRoom: Types.ObjectId
 
-  // Recurrence Boundaries
-  startDate: Date // The very first day classes begin
-  endDate?: Date // The date the recurrence stops (Optional for 'none')
+  recurrenceType: RecurrenceStrategy
 
-  // Rule Definitions
-  timeSlots: ITimeSlot[] // Supports multiple slots per day (Req: 9AM, 2PM, 6PM)
-  daysOfWeek: number[] // 0-6 (Sun-Sat) - Used for Weekly/Custom
-  daysOfMonth: number[] // 1-31 - Used for Monthly
+  // BOUNDARIES: These define the start and end of the repeating series
+  seriesStartDate: Date
+  seriesEndDate?: Date // Mandatory for repeating classes to prevent infinite loops
 
-  // The "Source of Truth" for Calendar UI
-  // Why: Storing individual instances allows us to use $unwind in Aggregation
-  // to find conflicts and populate the calendar extremely fast.
-  scheduleInstances: IScheduleInstance[]
-}
+  // RULES: These define the "Logic" of the repetition
+  repeatEveryXWeeksOrDays: number // The interval (e.g., 2 = every 2nd week)
+  selectedWeekdays: number[] // 0 (Sun) to 6 (Sat)
+  selectedMonthDays: number[] // 1 to 31
+  manuallyChosenDates: Date[] // For random-pick mode in Custom
 
-/**
- * INTERFACE: ITimeSlot
- * Why: Users can define multiple slots per day (e.g., 9 AM and 2 PM).
- * We store them as strings ("HH:mm") to make it easy for the UI to display
- * and for the backend to calculate the actual dates.
- */
-interface ITimeSlot {
-  startTime: string // Format: "09:00"
-  endTime: string // Format: "10:00"
-}
+  dailyTimeSlots: ITimeWindow[] // Multiple slots allowed per day (9AM, 2PM)
 
-/**
- * INTERFACE: IScheduleInstance
- * Why: This is the "Secret Sauce" for your Aggregation Pipeline.
- * Instead of calculating recurrence logic every time a user views the calendar,
- * we store the pre-calculated dates. This makes fetching 1000s of events instant.
- */
-interface IScheduleInstance {
-  start: Date // Full ISO Date + Time
-  end: Date // Full ISO Date + Time
-}
-
-export interface IClassSchedule extends Document {
-  title: string
-  instructor: Types.ObjectId
-  room: Types.ObjectId
-  recurrenceType: RecurrenceType
-  startDate: Date
-  endDate?: Date // Boundary for the loop (e.g., "Repeat until Dec 31st")
-  timeSlots: ITimeSlot[]
-  daysOfWeek: number[] // Used for Weekly (0-6)
-  daysOfMonth: number[] // Used for Monthly (1-31)
-  scheduleInstances: IScheduleInstance[]
+  // THE GENERATED OUTPUT
+  preGeneratedClassSessions: IIndividualClassSession[]
 }
 
 const ClassScheduleSchema = new Schema<IClassSchedule>(
   {
-    // Basic Info: Indexed for faster title searching
-    title: { type: String, required: true, index: true },
-
-    // Relationships: References to Instructor and Room models
-    instructor: {
+    classTitle: { type: String, required: true, trim: true, index: true },
+    assignedInstructor: {
       type: Schema.Types.ObjectId,
       ref: "Instructor",
       required: true,
       index: true,
     },
-    room: {
+    assignedRoom: {
       type: Schema.Types.ObjectId,
-      ref: "Room",
+      ref: "PhysicalRoom",
       required: true,
       index: true,
     },
 
-    // Scheduling Strategy
     recurrenceType: {
       type: String,
-      enum: Object.values(RecurrenceType),
-      default: RecurrenceType.NONE,
-      required: true,
+      enum: Object.values(RecurrenceStrategy),
+      default: RecurrenceStrategy.SINGLE_INSTANCE,
     },
 
-    // Boundaries: startDate is the first day; endDate is when the pattern stops
-    startDate: { type: Date, required: true },
-    endDate: { type: Date },
+    seriesStartDate: { type: Date, required: true },
+    seriesEndDate: { type: Date }, // Boundary for the loops
 
-    // The raw slots (e.g., 9 AM, 2 PM).
-    // Allowing multiple slots per day satisfies the "Example: 9 AM, 2 PM" requirement.
-    timeSlots: [
+    repeatEveryXWeeksOrDays: { type: Number, default: 1 }, // Used for Intervals
+    selectedWeekdays: [{ type: Number, min: 0, max: 6 }],
+    selectedMonthDays: [{ type: Number, min: 1, max: 31 }],
+    manuallyChosenDates: [{ type: Date }],
+
+    dailyTimeSlots: [
       {
-        startTime: { type: String, required: true },
-        endTime: { type: String, required: true },
+        startTime24h: { type: String, required: true },
+        endTime24h: { type: String, required: true },
       },
     ],
 
-    // Specific logic arrays for Weekly/Monthly recurrence
-    daysOfWeek: [{ type: Number, min: 0, max: 6 }],
-    daysOfMonth: [{ type: Number, min: 1, max: 31 }],
-
-    /**
-     * scheduleInstances:
-     * This array is the key to the whole project.
-     * 1. On Save: Your helper function generates every date in the pattern.
-     * 2. On Fetch: Your Aggregation Pipeline uses $unwind on this array to show
-     *    individual boxes on the Calendar UI.
-     * 3. On Conflict: You check if any 'start' or 'end' overlaps with a new class.
-     */
-    scheduleInstances: [
+    // This array is used by the Aggregation Pipeline for fast Calendar Rendering
+    preGeneratedClassSessions: [
       {
-        start: { type: Date, required: true },
-        end: { type: Date, required: true },
+        sessionStartDateTime: { type: Date, required: true },
+        sessionEndDateTime: { type: Date, required: true },
       },
     ],
   },
@@ -152,24 +103,17 @@ const ClassScheduleSchema = new Schema<IClassSchedule>(
 )
 
 /**
- * INDEXES (CRITICAL FOR PERFORMANCE)
- *
- * 1. Conflict Prevention: This index allows MongoDB to instantly check
- * if a Room is booked at a specific time across ALL documents.
+ * COMPOUND INDEXES for Conflict Prevention
+ * Why: Allows MongoDB to instantly check if a room or instructor is busy
+ * at a specific date/time without reading every document in the database.
  */
 ClassScheduleSchema.index({
-  room: 1,
-  "scheduleInstances.start": 1,
-  "scheduleInstances.end": 1,
+  assignedRoom: 1,
+  "preGeneratedClassSessions.sessionStartDateTime": 1,
 })
-
-/**
- * 2. Calendar View Performance: When fetching classes for a specific month,
- * this index ensures the Aggregation Pipeline doesn't perform a "Full Collection Scan".
- */
 ClassScheduleSchema.index({
-  "scheduleInstances.start": 1,
-  "scheduleInstances.end": 1,
+  assignedInstructor: 1,
+  "preGeneratedClassSessions.sessionStartDateTime": 1,
 })
 
 export const ClassSchedule = model<IClassSchedule>(
