@@ -9,24 +9,30 @@ import { invalidateResourceCache } from "../utils/index.js"
 export const createNewRoomType = async (req: Request, res: Response) => {
   try {
     const newlyCreatedRoomType = await RoomType.create(req.body)
-    console.log("New Room Type Created:", newlyCreatedRoomType)
-
-    // IMPORTANT: Clear/invalidate cache so GET /api/rooms returns the new data
     await invalidateResourceCache("ROOMS")
 
     return sendSuccess(
       res,
       "Room Type Created",
       "The new room category has been added successfully.",
-      newlyCreatedRoomType,
+      newlyCreatedRoomType, // data
+      null, // No pagination for single creation
     )
   } catch (error: any) {
-    console.error("Error Creating Room Type:", error)
+    // Map Mongoose errors to your IErrorDetail format
+    const errorDetails =
+      error.name === "ValidationError"
+        ? Object.values(error.errors).map((err: any) => ({
+            field: err.path,
+            message: err.message,
+          }))
+        : [{ field: "name", message: error.message }]
+
     return sendError(
       res,
       "Validation Error",
       "Check if the room type name is unique.",
-      [{ field: "name", message: error.message }],
+      errorDetails,
     )
   }
 }
@@ -36,20 +42,29 @@ export const createNewRoomType = async (req: Request, res: Response) => {
  */
 export const fetchAllRoomTypes = async (req: Request, res: Response) => {
   try {
-    const listOfRoomTypes = await RoomType.find()
+    // 1. Get query params and set defaults
+    const page = parseInt(req.query.page as string) || 1
+    const limit = parseInt(req.query.limit as string) || 10
+    const skip = (page - 1) * limit
 
+    // 2. Run count and find in parallel
+    const [listOfRoomTypes, total] = await Promise.all([
+      RoomType.find().skip(skip).limit(limit).sort({ createdAt: -1 }),
+      RoomType.countDocuments(),
+    ])
+
+    const totalPages = Math.ceil(total / limit)
+
+    // 3. Use your utility (Pass the pagination object)
     return sendSuccess(
       res,
       "Room Types Fetched",
       "Successfully loaded the list of room categories.",
       listOfRoomTypes,
+      { total, page, limit, totalPages }, // Matches IPagination
     )
   } catch (error: any) {
-    return sendError(
-      res,
-      "Server Error",
-      "Unable to load room types at this time.",
-    )
+    return sendError(res, "Server Error", "Unable to load room types.")
   }
 }
 
@@ -59,6 +74,12 @@ export const fetchAllRoomTypes = async (req: Request, res: Response) => {
 export const updateRoomTypeDetails = async (req: Request, res: Response) => {
   try {
     const targetRoomTypeId = req.params.id as string
+    console.log(
+      "Updating Room Type ID:",
+      targetRoomTypeId,
+      "with data:",
+      req.body,
+    )
 
     const updatedRoomTypeRecord = await RoomType.findByIdAndUpdate(
       targetRoomTypeId,
@@ -84,6 +105,7 @@ export const updateRoomTypeDetails = async (req: Request, res: Response) => {
       updatedRoomTypeRecord,
     )
   } catch (error: any) {
+    console.error("Error updating room type:", error)
     return sendError(res, "Update Error", error.message)
   }
 }

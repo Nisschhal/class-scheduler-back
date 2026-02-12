@@ -1,18 +1,16 @@
 import type { Request, Response } from "express"
 import { Instructor } from "../models/instructor.model.js"
 import { sendSuccess, sendError } from "../utils/api-response.js"
-import { clearCache } from "../middleware/cache.middleware.js"
-import { CACHE_KEYS } from "../utils/constants/cache-key.constant.js"
 import { invalidateResourceCache } from "../utils/index.js"
+
 /**
  * @description Creates a new instructor record in the database.
- * @logic       Invalidates any cached instructor lists to ensure data consistency.
  */
 export const createNewInstructor = async (req: Request, res: Response) => {
   try {
     const newlyCreatedInstructor = await Instructor.create(req.body)
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/instructors returns the new data
+    // Invalidate cache so GET /api/instructors reflects changes
     await invalidateResourceCache("INSTRUCTORS")
 
     return sendSuccess(
@@ -22,7 +20,6 @@ export const createNewInstructor = async (req: Request, res: Response) => {
       newlyCreatedInstructor,
     )
   } catch (error: any) {
-    // We provide a field-specific error for the email to help the frontend highlight the input
     return sendError(
       res,
       "Validation Error",
@@ -33,18 +30,40 @@ export const createNewInstructor = async (req: Request, res: Response) => {
 }
 
 /**
- * @description Retrieves all instructors.
- * @logic       In a full implementation, this should check Redis before hitting MongoDB.
+ * @description Retrieves all instructors with pagination.
+ * @url_example /api/instructors?page=1&limit=10
  */
 export const fetchAllInstructors = async (req: Request, res: Response) => {
   try {
-    const listOfAllInstructors = await Instructor.find()
+    // 1. Setup pagination variables
+    const page = parseInt(req.query.page as string) || 1
+    const limit = parseInt(req.query.limit as string) || 10
+    const skip = (page - 1) * limit
 
+    // 2. Fetch data and total count in parallel
+    const [listOfAllInstructors, total] = await Promise.all([
+      Instructor.find()
+        .sort({ name: 1 }) // Sorting by name alphabetically is usually helpful for instructors
+        .skip(skip)
+        .limit(limit),
+      Instructor.countDocuments(),
+    ])
+
+    // 3. Calculate total pages
+    const totalPages = Math.ceil(total / limit)
+
+    // 4. Returns "Success Response With Pagination"
     return sendSuccess(
       res,
       "Instructors Fetched",
       "The complete list of instructors has been loaded.",
       listOfAllInstructors,
+      {
+        total,
+        page,
+        limit,
+        totalPages,
+      },
     )
   } catch (error: any) {
     return sendError(
@@ -76,7 +95,6 @@ export const updateInstructorDetails = async (req: Request, res: Response) => {
       )
     }
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/instructors returns the new data
     await invalidateResourceCache("INSTRUCTORS")
 
     return sendSuccess(
@@ -115,14 +133,13 @@ export const removeInstructorFromSystem = async (
       )
     }
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/instructors returns the new data
     await invalidateResourceCache("INSTRUCTORS")
 
     return sendSuccess(
       res,
       "Instructor Deleted",
       "The instructor has been removed from the database.",
-      {},
+      {}, // Empty data as requested for deleted records
     )
   } catch (error: any) {
     return sendError(

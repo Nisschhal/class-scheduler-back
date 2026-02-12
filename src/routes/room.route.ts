@@ -9,19 +9,39 @@ import {
   updatePhysicalRoomDetails,
   removePhysicalRoomFromSystem,
 } from "../controllers/index.js"
+import { cacheMiddleware, validate } from "../middleware/index.js"
+import {
+  paginationQuerySchema,
+  physicalRoomSchema,
+  roomTypeSchema,
+} from "../utils/index.js"
 
 const router = Router()
 
-// --- ROOM TYPE ROUTES (Categories) ---
-router.post("/types", createNewRoomType)
-router.get("/types", fetchAllRoomTypes)
-router.put("/types/:id", updateRoomTypeDetails)
+/* ── Room Types ────────────────────────────────────────────────────────────── */
+router.post("/types", validate(roomTypeSchema), createNewRoomType)
+router.get(
+  "/types",
+  validate(paginationQuerySchema),
+  cacheMiddleware,
+  fetchAllRoomTypes,
+)
+router.put("/types/:id", validate(roomTypeSchema), updateRoomTypeDetails)
 router.delete("/types/:id", removeRoomTypeFromSystem)
 
-// --- PHYSICAL ROOM ROUTES (Actual Locations) ---
-router.post("/physical", registerNewPhysicalRoom)
-router.get("/physical", fetchAllPhysicalRooms)
-router.put("/physical/:id", updatePhysicalRoomDetails)
+/* ── Physical Rooms ────────────────────────────────────────────────────────── */
+router.post("/physical", validate(physicalRoomSchema), registerNewPhysicalRoom)
+router.get(
+  "/physical",
+  validate(paginationQuerySchema),
+  cacheMiddleware,
+  fetchAllPhysicalRooms,
+)
+router.put(
+  "/physical/:id",
+  validate(physicalRoomSchema),
+  updatePhysicalRoomDetails,
+)
 router.delete("/physical/:id", removePhysicalRoomFromSystem)
 
 export default router

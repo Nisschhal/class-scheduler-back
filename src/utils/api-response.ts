@@ -37,6 +37,7 @@ export const sendSuccess = (
   message: string,
   data: any = {}, // Default to empty object if no data provided
   pagination: IPagination | null = null,
+  statusCode: number = 200,
 ) => {
   // Construct the base response
   const responseBody: any = {
@@ -58,7 +59,7 @@ export const sendSuccess = (
     }
   }
 
-  return res.status(200).json(responseBody)
+  return res.status(statusCode).json(responseBody)
 }
 
 /**

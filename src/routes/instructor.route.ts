@@ -4,22 +4,23 @@ import {
   fetchAllInstructors,
   updateInstructorDetails,
   removeInstructorFromSystem,
-} from "../controllers"
-
-import { cacheMiddleware } from "../middleware"
+} from "../controllers/index.js"
+import { cacheMiddleware, validate } from "../middleware/index.js"
+import { instructorSchema, paginationQuerySchema } from "../utils/index.js"
 
 const router = Router()
 
-// Create
-router.post("/", createNewInstructor)
+router.post("/", validate(instructorSchema), createNewInstructor)
 
-// Read (Cached)
-router.get("/", cacheMiddleware, fetchAllInstructors) // TODO: Add cacheMiddleware here
+router.get(
+  "/",
+  validate(paginationQuerySchema),
+  cacheMiddleware,
+  fetchAllInstructors,
+)
 
-// Update
-router.put("/:id", updateInstructorDetails)
+router.put("/:id", validate(instructorSchema), updateInstructorDetails)
 
-// Delete
 router.delete("/:id", removeInstructorFromSystem)
 
 export default router

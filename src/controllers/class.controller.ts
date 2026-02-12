@@ -1,13 +1,16 @@
 import { Request, Response } from "express"
 import { ClassSchedule } from "../models/class.model.js"
+import { Instructor } from "../models/instructor.model.js"
+import { PhysicalRoom } from "../models/room.model.js"
 import { sendSuccess, sendError } from "../utils/api-response.js"
 import { format } from "date-fns"
 import { invalidateResourceCache } from "../utils/cache-helper.js"
 import { generateAllClassSessions } from "../utils/schedule-generator.util.js"
 
 /**
- * HELPER: DETAILED CONFLICT CHECKER
- * Why: Checks both Room and Instructor against ALL other pre-generated sessions.
+ * HELPER: EXPLICIT CONFLICT DETECTOR
+ * @description Checks if an Instructor or Room is already booked for the proposed times.
+ * @returns An explicit error message detailing WHO, WHERE, and WHEN the conflict is.
  */
 const findDetailedSchedulingConflict = async (
   requestedSessions: { sessionStartDateTime: Date; sessionEndDateTime: Date }[],
@@ -15,11 +18,10 @@ const findDetailedSchedulingConflict = async (
   targetInstructorId: string,
   ignoreSeriesId?: string,
 ) => {
-  const conflictQuery: any = {
-    $or: [
-      { assignedRoom: targetRoomId },
-      { assignedInstructor: targetInstructorId },
-    ],
+  // 1. Prepare query logic: Check if any existing session overlaps with our proposed time slots
+  const baseQuery = (field: string, id: string) => ({
+    [field]: id,
+    ...(ignoreSeriesId && { _id: { $ne: ignoreSeriesId } }), // Don't conflict with itself during updates
     preGeneratedClassSessions: {
       $elemMatch: {
         $or: requestedSessions.map((newSess) => ({
@@ -28,16 +30,23 @@ const findDetailedSchedulingConflict = async (
         })),
       },
     },
-  }
+  })
 
-  if (ignoreSeriesId) conflictQuery._id = { $ne: ignoreSeriesId }
+  // 2. Run Instructor and Room checks simultaneously
+  const [instructorConflict, roomConflict] = await Promise.all([
+    ClassSchedule.findOne(
+      baseQuery("assignedInstructor", targetInstructorId),
+    ).populate("assignedInstructor"),
+    ClassSchedule.findOne(baseQuery("assignedRoom", targetRoomId)).populate(
+      "assignedRoom",
+    ),
+  ])
 
-  const conflictingSeries = await ClassSchedule.findOne(conflictQuery).populate(
-    "assignedRoom assignedInstructor",
-  )
-  if (!conflictingSeries) return null
+  if (!instructorConflict && !roomConflict) return null
 
-  const exactSession = conflictingSeries.preGeneratedClassSessions.find(
+  // 3. Identify the exact session that caused the overlap for the error message
+  const conflictSource = instructorConflict || roomConflict
+  const overlappingSession = conflictSource!.preGeneratedClassSessions.find(
     (existing) =>
       requestedSessions.some(
         (proposed) =>
@@ -46,20 +55,49 @@ const findDetailedSchedulingConflict = async (
       ),
   )
 
-  const isInstructor =
-    conflictingSeries.assignedInstructor._id.toString() === targetInstructorId
+  // 4. Format human-readable date and time
+  const dateStr = format(
+    overlappingSession!.sessionStartDateTime,
+    "EEEE, MMM do, yyyy",
+  )
+  const timeStart = format(overlappingSession!.sessionStartDateTime, "hh:mm a")
+  const timeEnd = format(overlappingSession!.sessionEndDateTime, "hh:mm a")
+
+  // 5. Build the Explicit Message
+  let entityName = ""
+  let field = ""
+
+  if (instructorConflict && roomConflict) {
+    const teacher = (instructorConflict.assignedInstructor as any).name
+    const room = (roomConflict.assignedRoom as any).roomName
+    entityName = `Instructor "${teacher}" AND Room "${room}" are both`
+    field = "assignedInstructor"
+  } else if (instructorConflict) {
+    const teacher = (instructorConflict.assignedInstructor as any).name
+    entityName = `Instructor "${teacher}" is`
+    field = "assignedInstructor"
+  } else {
+    const room = (roomConflict!.assignedRoom as any).roomName
+    entityName = `Room "${room}" is`
+    field = "assignedRoom"
+  }
+
   return {
-    field: isInstructor ? "assignedInstructor" : "assignedRoom",
-    message: `${isInstructor ? "Instructor" : "Room"} is busy on ${format(exactSession!.sessionStartDateTime, "PPpp")}`,
+    field,
+    message: `Conflict Detected: ${entityName} occupied on ${dateStr} from ${timeStart} to ${timeEnd}.`,
   }
 }
 
 /**
  * CREATE CLASS SERIES
+ * @logic Generates all session dates based on rules and checks for overlaps before saving.
  */
 export const createClassSeries = async (req: Request, res: Response) => {
   try {
+    // Generate the array of sessions (Source of Truth)
     const generatedSessions = generateAllClassSessions(req.body)
+
+    // Explicit overlap check
     const conflict = await findDetailedSchedulingConflict(
       generatedSessions,
       req.body.assignedRoom,
@@ -67,22 +105,29 @@ export const createClassSeries = async (req: Request, res: Response) => {
     )
 
     if (conflict)
-      return sendError(res, "Conflict", conflict.message, [conflict])
+      return sendError(res, "Scheduling Conflict", conflict.message, [conflict])
 
     const newClass = await ClassSchedule.create({
       ...req.body,
       preGeneratedClassSessions: generatedSessions,
     })
+
     await invalidateResourceCache("CLASSES")
-    return sendSuccess(res, "Success", "Series created", newClass)
+
+    return sendSuccess(
+      res,
+      "Series Created",
+      "The new class schedule and sessions have been generated.",
+      newClass,
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(res, "Validation Error", error.message)
   }
 }
 
 /**
  * GET PAGINATED CLASSES
- * Why: Uses aggregation $facet to return total count and joined data in one request.
+ * @logic Uses aggregation $facet to return data and total record count in a single request.
  */
 export const getPaginatedClasses = async (req: Request, res: Response) => {
   try {
@@ -121,32 +166,39 @@ export const getPaginatedClasses = async (req: Request, res: Response) => {
     ])
 
     const total = results[0].metadata[0]?.total || 0
-    return sendSuccess(res, "Fetched", "Success", results[0].data, {
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-    })
+
+    return sendSuccess(
+      res,
+      "Classes Fetched",
+      "Class list loaded successfully",
+      results[0].data,
+      {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(res, "Server Error", "Unable to load class schedules.")
   }
 }
 
 /**
- * UPDATE ENTIRE SERIES (Bulk Update)
- * Why: Merges existing exceptions into new rules to protect manual changes.
+ * UPDATE ENTIRE SERIES (Bulk Edit)
+ * @logic Re-generates sessions but protects manual overrides stored in 'exceptions'.
  */
 export const updateEntireClassSeries = async (req: Request, res: Response) => {
   try {
-    let { id } = req.params
+    let id = req.params.id
     if (Array.isArray(id)) id = id[0]
     const series = await ClassSchedule.findById(id)
     if (!series) return sendError(res, "Not Found", "Series not found")
 
-    // 1. Generate "Fresh" sessions from new rules
+    // 1. Generate new sessions from the updated rules
     let newSessions = generateAllClassSessions(req.body)
 
-    // 2. THE PROTECTION LOGIC: Apply old exceptions to new sessions
+    // 2. PROTECTION: Apply existing manual edits/cancellations to the new set
     newSessions = newSessions
       .map((sess) => {
         const manualEdit = series.exceptions.find(
@@ -154,48 +206,55 @@ export const updateEntireClassSeries = async (req: Request, res: Response) => {
             ex.originalStart.getTime() ===
               sess.sessionStartDateTime.getTime() && ex.status === "modified",
         )
-        if (manualEdit) {
-          return {
-            ...sess,
-            sessionStartDateTime: manualEdit.newStart!,
-            sessionEndDateTime: manualEdit.newEnd!,
-          }
-        }
-        return sess
+        return manualEdit
+          ? {
+              ...sess,
+              sessionStartDateTime: manualEdit.newStart!,
+              sessionEndDateTime: manualEdit.newEnd!,
+            }
+          : sess
       })
-      .filter((sess) => {
-        // Remove sessions that were previously cancelled
-        return !series.exceptions.some(
-          (ex) =>
-            ex.originalStart.getTime() ===
-              sess.sessionStartDateTime.getTime() && ex.status === "cancelled",
-        )
-      })
+      .filter(
+        (sess) =>
+          !series.exceptions.some(
+            (ex) =>
+              ex.originalStart.getTime() ===
+                sess.sessionStartDateTime.getTime() &&
+              ex.status === "cancelled",
+          ),
+      )
 
-    // 3. Conflict check the merged schedule
+    // 3. Conflict Check the merged schedule
     const conflict = await findDetailedSchedulingConflict(
       newSessions,
       req.body.assignedRoom,
       req.body.assignedInstructor,
       id,
     )
-    if (conflict) return sendError(res, "Conflict", conflict.message)
+    if (conflict)
+      return sendError(res, "Conflict", conflict.message, [conflict])
 
     const updated = await ClassSchedule.findByIdAndUpdate(
       id,
       { ...req.body, preGeneratedClassSessions: newSessions },
       { new: true },
     )
+
     await invalidateResourceCache("CLASSES")
-    return sendSuccess(res, "Success", "Entire series updated", updated)
+    return sendSuccess(
+      res,
+      "Series Updated",
+      "The entire series and its sessions have been updated.",
+      updated,
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(res, "Update Error", error.message)
   }
 }
 
 /**
- * UPDATE SINGLE INSTANCE (Re-editable Upsert Logic)
- * Why: Allows moving one session. If moved again, it updates the same exception.
+ * UPDATE SINGLE INSTANCE
+ * @logic Reschedules one specific session and records it as an 'exception' to prevent bulk-update overwrites.
  */
 export const updateSingleInstance = async (req: Request, res: Response) => {
   try {
@@ -205,13 +264,14 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
     const series = await ClassSchedule.findById(seriesId)
     if (!series) return sendError(res, "Not Found", "Series not found")
 
-    const sessionIdStr = Array.isArray(sessionId) ? sessionId[0] : sessionId
-    const session = series.preGeneratedClassSessions.id(sessionIdStr)
+    const normalizedSessionId = Array.isArray(sessionId)
+      ? sessionId[0]
+      : sessionId
+    const session = series.preGeneratedClassSessions.id(normalizedSessionId)
     if (!session)
       return sendError(res, "Not Found", "Session instance not found")
 
-    // Conflict Check
-    const seriesIdStr = Array.isArray(seriesId) ? seriesId[0] : seriesId
+    // Explicit conflict check for this specific slot
     const conflict = await findDetailedSchedulingConflict(
       [
         {
@@ -221,23 +281,20 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       ],
       series.assignedRoom.toString(),
       series.assignedInstructor.toString(),
-      seriesIdStr,
+      Array.isArray(seriesId) ? seriesId[0] : seriesId,
     )
-    if (conflict) return sendError(res, "Conflict", conflict.message)
+    if (conflict)
+      return sendError(res, "Conflict", conflict.message, [conflict])
 
-    // UPSERT EXCEPTION: Find if this session was already modified before
+    // Upsert logic: Track this change in the exceptions array
     const exIdx = series.exceptions.findIndex(
       (ex) =>
         ex.originalStart.getTime() === session.sessionStartDateTime.getTime(),
     )
-
     if (exIdx !== -1) {
-      // Update existing exception
       series.exceptions[exIdx].newStart = new Date(newStart)
       series.exceptions[exIdx].newEnd = new Date(newEnd)
-      series.exceptions[exIdx].reason = reason || "Updated again"
     } else {
-      // Create new exception record
       series.exceptions.push({
         originalStart: session.sessionStartDateTime,
         status: "modified",
@@ -247,20 +304,26 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       })
     }
 
-    // Apply to Source of Truth
+    // Apply change to the pre-generated session
     session.sessionStartDateTime = new Date(newStart)
     session.sessionEndDateTime = new Date(newEnd)
 
     await series.save()
     await invalidateResourceCache("CLASSES")
-    return sendSuccess(res, "Success", "Instance updated", series)
+    return sendSuccess(
+      res,
+      "Instance Updated",
+      "Single session moved successfully.",
+      series,
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(res, "Update Error", error.message)
   }
 }
 
 /**
  * CANCEL SINGLE INSTANCE
+ * @logic Removes a session from the active list and marks it as cancelled in exceptions.
  */
 export const cancelSingleInstance = async (req: Request, res: Response) => {
   try {
@@ -268,25 +331,30 @@ export const cancelSingleInstance = async (req: Request, res: Response) => {
     const series = await ClassSchedule.findById(seriesId)
     if (!series) return sendError(res, "Not Found", "Series not found")
 
-    const sessionIdStr = Array.isArray(sessionId) ? sessionId[0] : sessionId
-    const session = series.preGeneratedClassSessions.id(sessionIdStr)
+    const normalizedSessionId = Array.isArray(sessionId)
+      ? sessionId[0]
+      : sessionId
+    const session = series.preGeneratedClassSessions.id(normalizedSessionId)
     if (!session) return sendError(res, "Not Found", "Session not found")
 
-    // Add to exceptions so we don't regenerate it later
     series.exceptions.push({
       originalStart: session.sessionStartDateTime,
       status: "cancelled",
       reason: req.body?.reason ?? "Cancelled by user",
     })
 
-    // Remove from the pre-generated array (Source of Truth)
     series.preGeneratedClassSessions.pull(sessionId)
 
     await series.save()
     await invalidateResourceCache("CLASSES")
-    return sendSuccess(res, "Success", "Instance cancelled", { sessionId })
+    return sendSuccess(
+      res,
+      "Session Cancelled",
+      "The session has been removed from the schedule.",
+      { sessionId },
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(res, "Cancellation Error", error.message)
   }
 }
 
@@ -297,8 +365,17 @@ export const deleteEntireClassSeries = async (req: Request, res: Response) => {
   try {
     await ClassSchedule.findByIdAndDelete(req.params.id)
     await invalidateResourceCache("CLASSES")
-    return sendSuccess(res, "Success", "Series deleted completely")
+    return sendSuccess(
+      res,
+      "Series Deleted",
+      "The entire class series has been removed.",
+      {},
+    )
   } catch (error: any) {
-    return sendError(res, "Error", error.message)
+    return sendError(
+      res,
+      "Delete Error",
+      "An error occurred while deleting the series.",
+    )
   }
 }

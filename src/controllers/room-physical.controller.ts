@@ -2,26 +2,23 @@ import type { Request, Response } from "express"
 import { PhysicalRoom } from "../models/room.model.js"
 import { sendSuccess, sendError } from "../utils/api-response.js"
 import { invalidateResourceCache } from "../utils/index.js"
-// import { clearCache } from "../middleware/cache.js"
 
 /**
  * @description Registers a specific physical location where classes can be held.
- * @logic       Links the room to a specific RoomType category.
  */
 export const registerNewPhysicalRoom = async (req: Request, res: Response) => {
   try {
     const { roomName, roomTypeReference, seatingCapacity } = req.body
 
-    // We create the physical room using the provided data
     const newlyRegisteredRoom = await PhysicalRoom.create({
       roomName,
       roomTypeReference,
       seatingCapacity,
     })
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/rooms returns the new data
     await invalidateResourceCache("ROOMS")
 
+    // Returns "Success Response Without Pagination"
     return sendSuccess(
       res,
       "Physical Room Created",
@@ -39,20 +36,41 @@ export const registerNewPhysicalRoom = async (req: Request, res: Response) => {
 }
 
 /**
- * @description Fetches all physical rooms.
- * @logic       Includes "Population" to show the category name instead of just an ID.
+ * @description Fetches all physical rooms with pagination.
+ * @url_example /api/rooms/physical?page=1&limit=10
  */
 export const fetchAllPhysicalRooms = async (req: Request, res: Response) => {
   try {
-    // We use .populate to bring in the name of the RoomType category
-    const listOfAllPhysicalRooms =
-      await PhysicalRoom.find().populate("roomTypeReference")
+    // 1. Setup pagination variables
+    const page = parseInt(req.query.page as string) || 1
+    const limit = parseInt(req.query.limit as string) || 10
+    const skip = (page - 1) * limit
 
+    // 2. Fetch data and total count in parallel
+    const [listOfAllPhysicalRooms, total] = await Promise.all([
+      PhysicalRoom.find()
+        .populate("roomTypeReference")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      PhysicalRoom.countDocuments(),
+    ])
+
+    // 3. Calculate total pages
+    const totalPages = Math.ceil(total / limit)
+
+    // 4. Returns "Success Response With Pagination"
     return sendSuccess(
       res,
       "Rooms Fetched",
       "The list of all physical rooms has been retrieved.",
       listOfAllPhysicalRooms,
+      {
+        total,
+        page,
+        limit,
+        totalPages,
+      },
     )
   } catch (error: any) {
     return sendError(
@@ -64,12 +82,13 @@ export const fetchAllPhysicalRooms = async (req: Request, res: Response) => {
 }
 
 /**
- * @description Updates the details of a physical room (e.g., increasing capacity).
+ * @description Updates the details of a physical room.
  */
 export const updatePhysicalRoomDetails = async (
   req: Request,
   res: Response,
 ) => {
+  console.log("Update Physical Room Details Called with body:", req.body)
   try {
     const targetRoomId = req.params.id as string
 
@@ -87,7 +106,6 @@ export const updatePhysicalRoomDetails = async (
       )
     }
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/rooms returns the new data
     await invalidateResourceCache("ROOMS")
 
     return sendSuccess(
@@ -117,7 +135,6 @@ export const removePhysicalRoomFromSystem = async (
       return sendError(res, "Not Found", "Could not find the room to delete.")
     }
 
-    // IMPORTANT: Clear/invalidate cache so GET /api/rooms returns the new data
     await invalidateResourceCache("ROOMS")
 
     return sendSuccess(

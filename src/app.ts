@@ -3,7 +3,8 @@ import cors from "cors"
 import dotenv from "dotenv"
 import routes from "./routes/index.js"
 import { globalErrorHandler } from "./middleware/error-handler.middleware.js"
-
+import swaggerUi from "swagger-ui-express"
+import swaggerSpec from "./config/swagger.config.js"
 dotenv.config() // Ensure env variables are loaded for the whole app
 
 const app = express()
@@ -23,6 +24,11 @@ app.get("/", (req, res) => {
 })
 app.use("/api", routes)
 
+// Swagger UI route
+app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec))
+console.log(
+  `Swagger docs: http://localhost:${process.env.PORT || 3001}/api/docs`,
+)
 // Final Error Middleware
 app.use(globalErrorHandler)
 
