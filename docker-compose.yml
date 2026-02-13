@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  # ── BACKEND API ──────────────────────────────────────────────────────────────
+  backend:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - TZ=Asia/Kathmandu # ← added: sets timezone for Node.js
+      # Pulls from your local .env file (or .env.local, etc.)
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - mongodb
+      - redis
+    restart: always
+    # Optional: give it more memory if you have heavy operations
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1g
+
+  # ── LOCAL MONGODB ────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # ── LOCAL REDIS ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine # use a specific version
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data # optional: persist redis data
+    restart: always
+
+volumes:
+  mongo_data:
+  redis_data: # optional but good practice
+

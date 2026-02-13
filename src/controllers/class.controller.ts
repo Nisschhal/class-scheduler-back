@@ -267,8 +267,11 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       assignedRoom,
     } = req.body
 
+    // Normalize seriesId to always be a string
+    const normalizedSeriesId = Array.isArray(seriesId) ? seriesId[0] : seriesId
+
     // 1. Fetch the parent series
-    const series = await ClassSchedule.findById(seriesId)
+    const series = await ClassSchedule.findById(normalizedSeriesId)
     if (!series) return sendError(res, "Not Found", "Series not found")
 
     // 2. If it's already 'none', we don't detach, we just update normally
@@ -289,7 +292,10 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
     }
 
     // 3. DETACH LOGIC: Find the specific session
-    const session = series.preGeneratedClassSessions.id(sessionId)
+    const normalizedSessionId = Array.isArray(sessionId)
+      ? sessionId[0]
+      : sessionId
+    const session = series.preGeneratedClassSessions.id(normalizedSessionId)
     if (!session)
       return sendError(res, "Not Found", "Session instance not found")
 
@@ -302,7 +308,7 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       [{ sessionStartDateTime: finalStart, sessionEndDateTime: finalEnd }],
       assignedRoom || series.assignedRoom.toString(),
       assignedInstructor || series.assignedInstructor.toString(),
-      seriesId,
+      normalizedSeriesId,
     )
     if (conflict)
       return sendError(res, "Conflict", conflict.message, [conflict])

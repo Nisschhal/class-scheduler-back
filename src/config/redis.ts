@@ -3,22 +3,23 @@ import dotenv from "dotenv"
 
 dotenv.config()
 
-const redisUrl = process.env.REDIS_URL
+// Fallback to local docker service named 'redis'
+const redisUrl = process.env.REDIS_URL || "redis://redis:6379"
 
-if (!redisUrl) {
-  console.error("❌ REDIS_URL is missing in .env")
-}
-
-// Create one single instance to be shared
-export const redis = new Redis(redisUrl as string, {
+export const redis = new Redis(redisUrl, {
   maxRetriesPerRequest: 3,
-  // This stops the infinite "ECONNREFUSED" loop if it fails
+  // If using local redis, we disable TLS (Upstash requires it, local doesn't)
+  tls: redisUrl.startsWith("rediss://") ? {} : undefined,
 })
 
-redis.on("connect", () => console.log("✅ Connected to Upstash Redis"))
+redis.on("connect", () => {
+  console.log(
+    `✅ Redis Connected to: ${redisUrl.includes("upstash") ? "Upstash" : "Local Docker"}`,
+  )
+})
+
 redis.on("error", (err) => {
   if ((err as any).code !== "ECONNREFUSED") {
-    // Ignore initial connection noise
     console.error("❌ Redis Error:", err.message)
   }
 })
