@@ -15,14 +15,15 @@ app.use((req, res, next) => {
   next()
 })
 
-// Allow your frontend origin(s) — use * only for testing
 app.use(cors({
-  origin: '*',  // ← TEMPORARY: allow everyone (test only)
-  // Later change to:
-  // origin: ['http://localhost:5173', 'https://your-frontend-domain.vercel.app'],
+  origin: [
+    'http://localhost:5173',                          // keep for local dev
+    'https://class-scheduler-back.onrender.com/',        // ← REPLACE with your ACTUAL frontend URL
+    // Add more if you have multiple deployments
+  ],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false, // no cookies yet
+  allowedHeaders: ['Content-Type'],
+  credentials: false,
 }));
 
 app.use(express.json())
