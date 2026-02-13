@@ -218,7 +218,7 @@ const swaggerDefinition = {
   },
   paths: {
     /* --- INSTRUCTORS --- */
-    "/api/instructors": {
+    "/instructors": {
       get: {
         tags: ["Instructors"],
         summary: "Fetch all instructors",
@@ -251,7 +251,7 @@ const swaggerDefinition = {
         responses: { 200: { $ref: "#/components/responses/SuccessSingle" } },
       },
     },
-    "/api/instructors/{id}": {
+    "/instructors/{id}": {
       put: {
         tags: ["Instructors"],
         summary: "Update instructor details",
@@ -288,7 +288,7 @@ const swaggerDefinition = {
     },
 
     /* --- ROOM TYPES --- */
-    "/api/rooms/types": {
+    "/rooms/types": {
       get: {
         tags: ["Room Management"],
         summary: "Fetch all room categories",
@@ -319,7 +319,7 @@ const swaggerDefinition = {
         responses: { 200: { $ref: "#/components/responses/SuccessSingle" } },
       },
     },
-    "/api/rooms/types/{id}": {
+    "/rooms/types/{id}": {
       put: {
         tags: ["Room Management"],
         summary: "Update room category",
@@ -356,7 +356,7 @@ const swaggerDefinition = {
     },
 
     /* --- PHYSICAL ROOMS --- */
-    "/api/rooms/physical": {
+    "/rooms/physical": {
       get: {
         tags: ["Room Management"],
         summary: "Fetch all physical rooms",
@@ -387,7 +387,7 @@ const swaggerDefinition = {
         responses: { 200: { $ref: "#/components/responses/SuccessSingle" } },
       },
     },
-    "/api/rooms/physical/{id}": {
+    "/rooms/physical/{id}": {
       put: {
         tags: ["Room Management"],
         summary: "Update physical room details",
@@ -424,7 +424,7 @@ const swaggerDefinition = {
     },
 
     /* --- CLASSES --- */
-    "/api/classes": {
+    "/classes": {
       get: {
         tags: ["Classes"],
         summary: "Fetch class schedules (Calendar source)",
@@ -464,7 +464,7 @@ const swaggerDefinition = {
         },
       },
     },
-    "/api/classes/{id}": {
+    "/classes/{id}": {
       put: {
         tags: ["Classes"],
         summary: "Update entire class series",
@@ -499,7 +499,7 @@ const swaggerDefinition = {
         responses: { 200: { $ref: "#/components/responses/SuccessSingle" } },
       },
     },
-    "/api/classes/{seriesId}/instances/{sessionId}": {
+    "/classes/{seriesId}/instances/{sessionId}": {
       patch: {
         tags: ["Classes"],
         summary: "Detach & update single session",

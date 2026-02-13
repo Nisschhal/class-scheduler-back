@@ -19,7 +19,7 @@ const router = Router()
 router.get(
   "/",
   validate(paginationQuerySchema),
-  // cacheMiddleware,
+  cacheMiddleware,
   getPaginatedClasses,
 )
 

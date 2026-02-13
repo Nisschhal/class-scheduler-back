@@ -267,9 +267,6 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       assignedRoom,
     } = req.body
 
-    // Normalize seriesId to always be a string
-    const normalizedSeriesId = Array.isArray(seriesId) ? seriesId[0] : seriesId
-
     // 1. Fetch the parent series
     const series = await ClassSchedule.findById(normalizedSeriesId)
     if (!series) return sendError(res, "Not Found", "Series not found")
