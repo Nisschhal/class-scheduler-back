@@ -256,8 +256,13 @@ export const updateEntireClassSeries = async (req: Request, res: Response) => {
 
 export const updateSingleInstance = async (req: Request, res: Response) => {
   try {
-    // Because of your middleware, these are already validated and cleaned
+    // Normalize params FIRST — this fixes the "normalizedSeriesId is not defined" error
     const { seriesId, sessionId } = req.params
+    const normalizedSeriesId = Array.isArray(seriesId) ? seriesId[0] : seriesId
+    const normalizedSessionId = Array.isArray(sessionId)
+      ? sessionId[0]
+      : sessionId
+
     const {
       newStart,
       newEnd,
@@ -267,13 +272,10 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       assignedRoom,
     } = req.body
 
-    // 1. Fetch the parent series
     const series = await ClassSchedule.findById(normalizedSeriesId)
     if (!series) return sendError(res, "Not Found", "Series not found")
 
-    // 2. If it's already 'none', we don't detach, we just update normally
     if (series.recurrenceType === RecurrenceStrategy.SINGLE_INSTANCE) {
-      // Logic for updating a standalone class (simple update)
       series.classTitle = classTitle || series.classTitle
       series.assignedInstructor =
         assignedInstructor || series.assignedInstructor
@@ -288,10 +290,6 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       return sendSuccess(res, "Updated", "Standalone class updated", series)
     }
 
-    // 3. DETACH LOGIC: Find the specific session
-    const normalizedSessionId = Array.isArray(sessionId)
-      ? sessionId[0]
-      : sessionId
     const session = series.preGeneratedClassSessions.id(normalizedSessionId)
     if (!session)
       return sendError(res, "Not Found", "Session instance not found")
@@ -299,8 +297,6 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
     const finalStart = newStart || session.sessionStartDateTime
     const finalEnd = newEnd || session.sessionEndDateTime
 
-    // 4. Conflict Check for the new detached slot
-    // We ignore the current seriesId to allow moving a session within its own time
     const conflict = await findDetailedSchedulingConflict(
       [{ sessionStartDateTime: finalStart, sessionEndDateTime: finalEnd }],
       assignedRoom || series.assignedRoom.toString(),
@@ -310,11 +306,6 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
     if (conflict)
       return sendError(res, "Conflict", conflict.message, [conflict])
 
-    /**
-     * TRANSACTION-LIKE EXECUTION
-     */
-
-    // 5. Create the new Independent Class (None Strategy)
     const newStandaloneClass = await ClassSchedule.create({
       classTitle: classTitle || series.classTitle,
       assignedInstructor: assignedInstructor || series.assignedInstructor,
@@ -322,14 +313,12 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       recurrenceType: RecurrenceStrategy.SINGLE_INSTANCE,
       seriesStartDate: finalStart,
       seriesEndDate: finalEnd,
-      // Create the single session
       preGeneratedClassSessions: [
         {
           sessionStartDateTime: finalStart,
           sessionEndDateTime: finalEnd,
         },
       ],
-      // Initialize other fields
       repeatEveryXWeeksOrDays: 1,
       selectedWeekdays: [],
       selectedMonthDays: [],
@@ -342,16 +331,13 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
       ],
     })
 
-    // 6. Update the original series:
-    // Add to 'exceptions' so bulk-update doesn't recreate it
     series.exceptions.push({
       originalStart: session.sessionStartDateTime,
       status: "cancelled",
       reason: reason,
     })
 
-    // 7. Remove from original series array
-    series.preGeneratedClassSessions.pull(sessionId)
+    series.preGeneratedClassSessions.pull(normalizedSessionId)
 
     await series.save()
     await invalidateResourceCache("CLASSES")
@@ -375,13 +361,16 @@ export const updateSingleInstance = async (req: Request, res: Response) => {
  */
 export const cancelSingleInstance = async (req: Request, res: Response) => {
   try {
+    // Normalize params FIRST
     const { seriesId, sessionId } = req.params
-    const series = await ClassSchedule.findById(seriesId)
-    if (!series) return sendError(res, "Not Found", "Series not found")
-
+    const normalizedSeriesId = Array.isArray(seriesId) ? seriesId[0] : seriesId
     const normalizedSessionId = Array.isArray(sessionId)
       ? sessionId[0]
       : sessionId
+
+    const series = await ClassSchedule.findById(normalizedSeriesId)
+    if (!series) return sendError(res, "Not Found", "Series not found")
+
     const session = series.preGeneratedClassSessions.id(normalizedSessionId)
     if (!session) return sendError(res, "Not Found", "Session not found")
 
@@ -391,21 +380,21 @@ export const cancelSingleInstance = async (req: Request, res: Response) => {
       reason: req.body?.reason ?? "Cancelled by user",
     })
 
-    series.preGeneratedClassSessions.pull(sessionId)
+    series.preGeneratedClassSessions.pull(normalizedSessionId)
 
     await series.save()
     await invalidateResourceCache("CLASSES")
+
     return sendSuccess(
       res,
       "Session Cancelled",
       "The session has been removed from the schedule.",
-      { sessionId },
+      { sessionId: normalizedSessionId },
     )
   } catch (error: any) {
     return sendError(res, "Cancellation Error", error.message)
   }
 }
-
 /**
  * DELETE ENTIRE SERIES
  */
