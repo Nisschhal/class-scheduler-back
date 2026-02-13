@@ -16,9 +16,12 @@ const swaggerDefinition = {
   servers: [
     {
       url: "http://localhost:3001/api",
-      description: "Development server",
+      description: "Local Development",
     },
-    // Add production URL later if needed
+    {
+      url: "https://class-scheduler-back.onrender.com/api", // ← REPLACE with YOUR Render URL
+      description: "Production (Render)",
+    },
   ],
   components: {
     schemas: {
