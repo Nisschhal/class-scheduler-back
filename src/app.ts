@@ -16,11 +16,7 @@ app.use((req, res, next) => {
 })
 
 app.use(cors({
-  origin: [
-    'http://localhost:5173',                          // keep for local dev
-    'https://class-scheduler-back.onrender.com/',        // ← REPLACE with your ACTUAL frontend URL
-    // Add more if you have multiple deployments
-  ],
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
   credentials: false,
